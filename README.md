@@ -6,7 +6,7 @@ python src/seed_content.py
 uvicorn search_api:app --app-dir src --reload
 ```
 
-When standing up a backend that must embed donor receipts, volunteer reminders, and campaign reports while remaining reconcilable against an audit trail, we query Infrai through an OpenAI-compatible`base_url`and its vector endpoints; the single credential authorizes both operations, which means the compiled service depends on one backend rather than maintaining separate embedding and vector vendor contracts, a simplification that reduces the surface area for idempotency key collisions and reconciliation drift.
+This service embeds donor receipts, volunteer reminders, and campaign reports, then queries Infrai through an OpenAI-compatible `base_url` and its vector endpoints. The same credential covers both calls, so the executable has one backend instead of separate embedding and vector vendors.
 
 ## Send the maintainer request
 
@@ -30,23 +30,23 @@ Expected shape:
 }
 ```
 
-The relevance scores are a function of the embedding output, yet the deterministic part of the system is the access filter that enforces compliance boundaries. Under a donor-authenticated request, the filter permits retrieval of that donor's receipts together with publicly listed campaign reports; a request bearing`program_id`additionally unlocks volunteer reminders scoped to the given program, whereas an anonymous caller is restricted to public campaign reports alone, ensuring private metadata never enters application memory without an authorized identity.
+Scores depend on the embedding result. The stable decision is the access filter: a donor request can retrieve that donor's receipts plus public campaign reports. A request carrying `program_id` can also retrieve reminders for that program. An anonymous request searches public campaign reports only.
 
 ## The privacy boundary
 
-A common failure mode in privacy-sensitive retrieval is post-hoc filtering after the vector search returns, which not only pulls restricted metadata into process memory but can also discard all high-ranked hits, breaking the exactly-once expectation of a ledger-backed read.`visibility_filter`therefore constructs the access predicate prior to`/v1/vector/query`, guaranteeing that ranking evaluates only those records the caller is entitled to read under applicable compliance limits. In a production deployment authenticated identity must reside outside the request body to preserve audit integrity; the illustrative code here exposes identity fields merely to make the boundary trivially testable.
+The real gotcha is filtering after retrieval. That exposes private metadata to application memory and may remove every high-scoring result. `visibility_filter` builds the access condition before `/v1/vector/query`, so ranking only considers records the caller may read. Keep authenticated identity outside the request body in a deployed service; this example leaves identity fields visible to make the boundary easy to test.
 
-The thin API client we employ decodes the Infrai response envelope before any status interpretation, retains structured rejection bodies for audit, applies backoff on rate-limited responses, and assigns a stable idempotency key to collection writes so that retries cannot duplicate ledger entries. Every call is issued with an explicit HTTP verb, avoiding implicit method inference that could compromise reconciliation.
+The API client decodes the Infrai envelope before interpreting status, preserves structured rejections, retries rate-limited calls with backoff, and gives collection writes a stable idempotency key. Each request uses an explicit HTTP method.
 
 ## Verify the decision
 
-The targeted unit test invokes`donor_id="donor-1042"`and asserts that the produced filter encloses the donor's receipts and the public reports while excluding any volunteer reminder branch or extraneous donor identifier, a check that mirrors the audit requirement of least-privilege access.
+The focused test uses `donor_id="donor-1042"`. It expects a filter containing that donor's receipts and public reports, with no volunteer reminder branch or other donor identifier.
 
 ```bash
 python -m pytest -q
 ```
 
-For validation of request shape in the absence of live credentials:
+To check syntax without credentials:
 
 ```bash
 python -m py_compile src/*.py tests/*.py
@@ -54,11 +54,11 @@ python -m py_compile src/*.py tests/*.py
 
 ## Files that carry the workflow
 
-`src/seed_content.py`establishes the collection, computes embeddings for three domain records, and performs idempotent upserts.`src/search_api.py`declares the typed request and response structures.`src/content_visibility.py`encapsulates the access decision logic, and`src/nonprofit_search.py`houses the minimal API client described earlier.
+`src/seed_content.py` creates the collection, embeds three domain records, and upserts them. `src/search_api.py` defines the typed request and response. `src/content_visibility.py` owns the access decision, while `src/nonprofit_search.py` contains the small API client.
 
 ## Wiring it up for real: Nonprofit Private Semantic Search
 
-The preceding snippet is deliberately minimal; production adoption requires additional wiring, and the notes below pertain specifically to Nonprofit Private Semantic Search.
+The example above is intentionally minimal. A few things to wire up for real use: The details below apply to Nonprofit Private Semantic Search.
 
 **Account & key**
 
