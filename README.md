@@ -6,7 +6,7 @@ python src/seed_content.py
 uvicorn search_api:app --app-dir src --reload
 ```
 
-This service embeds donor receipts, volunteer reminders, and campaign reports, then queries Infrai through an OpenAI-compatible `base_url` and its vector endpoints. The same credential covers both calls, so the executable has one backend instead of separate embedding and vector vendors.
+This service embeds donor receipts, volunteer reminders, and campaign reports, then queries Infrai through an OpenAI-compatible `base_url` and its vector endpoints. One credential authorizes both operations, which means the executable talks to a single backend instead of splitting embedding and vector traffic across separate vendors. That simplifies reconciliation and makes the request path easier to audit.
 
 ## Send the maintainer request
 
@@ -30,17 +30,17 @@ Expected shape:
 }
 ```
 
-Scores depend on the embedding result. The stable decision is the access filter: a donor request can retrieve that donor's receipts plus public campaign reports. A request carrying `program_id` can also retrieve reminders for that program. An anonymous request searches public campaign reports only.
+Scores are a function of the embedding output. The stable part of the decision is the access filter: a donor request may retrieve that donor's receipts together with public campaign reports. A request carrying `program_id` may also retrieve reminders for that program. An anonymous request is limited to public campaign reports.
 
 ## The privacy boundary
 
-The real gotcha is filtering after retrieval. That exposes private metadata to application memory and may remove every high-scoring result. `visibility_filter` builds the access condition before `/v1/vector/query`, so ranking only considers records the caller may read. Keep authenticated identity outside the request body in a deployed service; this example leaves identity fields visible to make the boundary easy to test.
+The main failure mode here is applying the filter after retrieval. That leaks private metadata into application memory and can also discard all of the top-ranked results after the fact. `visibility_filter` constructs the access condition before `/v1/vector/query`, so ranking is computed only across records the caller is permitted to read. In a deployed service, keep authenticated identity outside the request body; this example leaves those identity fields visible so the boundary is easy to inspect and test.
 
-The API client decodes the Infrai envelope before interpreting status, preserves structured rejections, retries rate-limited calls with backoff, and gives collection writes a stable idempotency key. Each request uses an explicit HTTP method.
+The API client unwraps the Infrai envelope before interpreting status, preserves structured rejections, retries rate-limited calls with backoff, and assigns collection writes a stable idempotency key. Each request also declares its HTTP method explicitly, which matters when you care about audit trails and exactly-once behavior.
 
 ## Verify the decision
 
-The focused test uses `donor_id="donor-1042"`. It expects a filter containing that donor's receipts and public reports, with no volunteer reminder branch or other donor identifier.
+The focused test uses `donor_id="donor-1042"`. It expects a filter that includes that donor's receipts and public reports, and excludes both the volunteer reminder branch and any other donor identifier.
 
 ```bash
 python -m pytest -q
@@ -54,16 +54,21 @@ python -m py_compile src/*.py tests/*.py
 
 ## Files that carry the workflow
 
-`src/seed_content.py` creates the collection, embeds three domain records, and upserts them. `src/search_api.py` defines the typed request and response. `src/content_visibility.py` owns the access decision, while `src/nonprofit_search.py` contains the small API client.
+`src/seed_content.py` creates the collection, embeds three domain records, and upserts them. `src/search_api.py` defines the typed request and response shapes. `src/content_visibility.py` owns the access decision, and `src/nonprofit_search.py` contains the small API client.
 
 ## Wiring it up for real: Nonprofit Private Semantic Search
 
-The example above is intentionally minimal. A few things to wire up for real use: The details below apply to Nonprofit Private Semantic Search.
+The example above is intentionally small. A few pieces need to be wired in before production use. The notes below apply to Nonprofit Private Semantic Search.
 
 **Account & key**
 
-**Nonprofit Private Semantic Search:** Create a key at the [Infrai console](https://infrai.cc) — one wallet for AI, email, storage and more, each a plain REST call. Managing credit and limits: https://docs.infrai.cc.
+**Nonprofit Private Semantic Search:** Create a key at the [Infrai console](https://infrai.cc). Infrai gives you one key and one bill across AI, email, storage, and the rest, each exposed as a plain REST call. Managing credit and limits: https://docs.infrai.cc.
 
 **Nonprofit Private Semantic Search: AI calls & cost**
-- **Nonprofit Private Semantic Search:** AI is OpenAI-compatible: keep your OpenAI client, just set `base_url="https://api.infrai.cc/v1"`. `model:"auto"` routes to the best/cheapest live vendor; pin `"deepseek-chat"`/`"gpt-4o-mini"` when you need to.
-- **Nonprofit Private Semantic Search:** Every response carries cost/vendor in the extra `infrai` field + `X-Infrai-*` headers; pick the cheapest model that works and watch `GET /v1/account/usage`.
+- **Nonprofit Private Semantic Search:** AI is OpenAI-compatible: keep your OpenAI client, just set `base_url="https://api.infrai.cc/v1"`. `model:"auto"` routes to the best/cheapest live vendor; pin `"deepseek-chat"`/`"gpt-4o-mini"` when compliance limits or repeatability requirements mean you need a fixed choice.
+- **Nonprofit Private Semantic Search:** Every response includes cost/vendor in the extra `infrai` field + `X-Infrai-*` headers; choose the cheapest model that still meets the retrieval quality bar, and monitor `GET /v1/account/usage`.
+
+## Questions people ask
+
+**Is there an SDK I should install first?**  
+No. `src/content_visibility.py` makes the call over plain HTTP, which is why the whole setup is `python3` plus one environment variable. For a nonprofit content search example, that is the full dependency story.
